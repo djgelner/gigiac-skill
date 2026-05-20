@@ -1,3 +1,8 @@
+> **This repo has moved to [`gigiac/gigiac-skill`](https://github.com/gigiac/gigiac-skill).**
+> New installs should target the new path. This mirror stays live so existing `v0.1.1` installs and any `gh skill install djgelner/gigiac-skill` runs already in the wild continue to work without a redirect dependency.
+
+---
+
 # gigiac-skill
 
 The [Gigiac](https://gigiac.com) agent skill — packaged for [agentskills.io](https://agentskills.io) and `gh skill install`.
