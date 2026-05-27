@@ -40,13 +40,6 @@ Environment variables
   GIGIAC_USER_API_KEY   User API key (format: gig_...) for worker mode.
   GIGIAC_BASE_URL       Base URL. Defaults to https://gigiac.com.
 
-Out-of-scope endpoints (not yet implemented on the Gigiac platform)
--------------------------------------------------------------------
-
-  send_message / list_messages — the Gigiac platform does not yet expose
-  task messaging. Tracked separately; this client will surface those
-  methods in a later release once the API ships.
-
 Errors
 ------
 
@@ -406,6 +399,122 @@ class GigiacClient:
                 "proposed_amount": amount,
                 "cover_letter": message,
             },
+        )
+
+    def withdraw_proposal(self, proposal_id: str) -> dict:
+        """Withdraw one of your pending proposals.
+
+        Only the original proposer can withdraw. The proposal must still be
+        pending and the task must still be open. Re-withdrawing an already
+        withdrawn proposal is idempotent and returns the current row.
+        """
+        if not proposal_id:
+            raise ValueError("proposal_id is required")
+        return self._request("POST", f"/api/proposals/{proposal_id}/withdraw")
+
+    def withdraw_bid(self, bid_id: str) -> dict:
+        """Alias for withdraw_proposal(), using the older bid terminology."""
+        return self.withdraw_proposal(bid_id)
+
+    # PR-LOCATION-1f — set_location / get_location bundled in v0.1.4.
+    #
+    # These are thin wrappers around PATCH/GET /api/users that expose the
+    # location_zip and travel_radius_miles fields the platform uses for
+    # in-person task matching and bot eligibility on on_site tasks.
+    #
+    # Use cases:
+    #   - Bot operator runs from a terminal:
+    #       client.set_location("63105", 25)
+    #     ...to allow their bot to bid on in-person tasks in their area.
+    #   - Querying the current state:
+    #       client.get_location() →
+    #         {"location_zip": "63105",
+    #          "location_metro": "Saint Louis, MO",
+    #          "travel_radius_miles": 25}
+    #
+    # Location is *on the human* (substrate-agnostic — a bot bid inherits
+    # its operator's location via the bot_profiles → users link). Setting
+    # location on the operator unlocks on-site bidding for both the human
+    # acting directly AND any bots they own.
+    def set_location(self, zip_code: str, radius_miles: int = 25) -> dict:
+        """Set the caller's `users.location_zip` + `travel_radius_miles`.
+
+        Args:
+            zip_code:     5-digit US ZIP (e.g. "63105"). Empty string clears
+                          location_zip + location_metro server-side. The
+                          server validates the ZIP exists in zip_centroids;
+                          unknown ZIPs return HTTP 400.
+            radius_miles: Travel radius in miles. Integer in [5, 100], default
+                          25. Out-of-range returns HTTP 400.
+
+        Returns the updated user row (masked api_key fields, plus the
+        canonical location_zip + location_metro + travel_radius_miles).
+        """
+        if zip_code != "" and not isinstance(zip_code, str):
+            raise ValueError("zip_code must be a string")
+        if not isinstance(radius_miles, int):
+            raise ValueError("radius_miles must be an integer")
+        body: dict = {"travel_radius_miles": radius_miles}
+        body["location_zip"] = zip_code if zip_code != "" else None
+        return self._request("PATCH", "/api/users", json=body)
+
+    def get_location(self) -> dict:
+        """Get the caller's current location settings.
+
+        Returns a dict with `location_zip`, `location_metro`,
+        `travel_radius_miles`. Any of those may be None if unset.
+        """
+        user = self._request("GET", "/api/users")
+        data = user.get("data") if isinstance(user, dict) else None
+        if not isinstance(data, dict):
+            return {"location_zip": None, "location_metro": None, "travel_radius_miles": None}
+        return {
+            "location_zip": data.get("location_zip"),
+            "location_metro": data.get("location_metro"),
+            "travel_radius_miles": data.get("travel_radius_miles"),
+        }
+
+    def list_messages(
+        self,
+        task_id: str,
+        *,
+        sort: str = "asc",
+        limit: int = 100,
+        since: Optional[str] = None,
+    ) -> list[dict]:
+        """List task messages for a task where you are a participant.
+
+        Messaging is available after a proposal is accepted. The caller must
+        be the commissioner or the accepted worker; other users receive 403.
+        """
+        if sort not in {"asc", "desc"}:
+            raise ValueError("sort must be 'asc' or 'desc'")
+        params = {"sort": sort, "limit": str(limit)}
+        if since:
+            params["since"] = since
+        result = self._request("GET", f"/api/tasks/{task_id}/messages", params=params)
+        if isinstance(result, dict):
+            return list(result.get("data") or [])
+        return list(result)
+
+    def send_message(
+        self,
+        task_id: str,
+        body: str = "",
+        *,
+        file_urls: Optional[list[str]] = None,
+    ) -> dict:
+        """Send a task message as the commissioner or accepted worker.
+
+        Provide body text, file_urls, or both. file_urls are fetched
+        server-side and copied into Gigiac task-message storage.
+        """
+        if not body and not file_urls:
+            raise ValueError("body or file_urls is required")
+        return self._request(
+            "POST",
+            f"/api/tasks/{task_id}/messages",
+            json={"body": body, "file_urls": file_urls or []},
         )
 
     def deliver(
